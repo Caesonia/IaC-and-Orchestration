@@ -13,7 +13,7 @@
         vpc_subnet_id: subnet-07fffa41
         group: APTrustOps
         wait: true
-        exact_count: 0
+        exact_count: 1
         count_tag:
           Name: DemoPreserv
         instance_tags:
