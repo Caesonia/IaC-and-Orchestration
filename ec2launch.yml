@@ -1,0 +1,200 @@
+---
+# This playbook is a proof of concept for creating new EC2 instances and
+# adding them automatically to the local Ansible hosts file as well as to your
+# .ssh/config file. The play worked when it was developed but may need changes
+# to make it work again.
+# Time is probably better spent to use Terraform and define all AWS
+# infrastructure in code. When that is implemented I hope you chose to tag
+# resources consistently so you can use a dynamic Ansible inventory rather than
+# the static hosts file.
+
+  - name: Instantiating an EC2 Instance
+    hosts: localhost
+    connection: local
+    gather_facts: False
+    become: no
+    tags: instantiate
+    # Necessary Variables for creating/provisioning the EC2 Instance
+    vars_files:
+      - "group_vars/vault.yml"
+    vars:
+      instance_type: t2.medium
+      instance_name: tmp-ebs-test2
+      instance_class: demo-servers
+      instance_orgtype: apt
+      security_group: EBS-Scale-Test
+      image: ami-cd0f5cb6
+      region: us-east-1
+      vpc_subnet_id: subnet-f92326bf
+      vpc_id: vpc-0ce02669
+      keypair: staging-test
+      count: 1
+
+    # Task that will be used to Launch/Create an EC2 Instance
+    tasks:
+      - name: Create a security group
+        local_action:
+          module: ec2_group
+          name: "{{ security_group }}"
+          description: Security Group for ebs-scale-test
+          region: "{{ region }}"
+          vpc_id: "{{vpc_id}}"
+          rules:
+            # Default SSH for provisioning
+            - proto: tcp
+              from_port: 22
+              to_port: 22
+              cidr_ip: 0.0.0.0/0
+            # Non-Default SSH post-provision
+            - proto: tcp
+              from_port: 1984
+              to_port: 1984
+              cidr_ip: 0.0.0.0/0
+          rules_egress:
+            # Let the dogs out.
+              - proto: all
+                cidr_ip: 0.0.0.0/0
+
+
+      - name: Launch the new EC2 Instance
+        ec2:
+          group: "{{security_group}}"
+          id: "{{instance_name}}"
+          instance_type: "{{ instance_type}}"
+          termination_protection: yes
+          image: "{{ image }}"
+          region: "{{ region }}"
+          keypair: "{{ keypair }}"
+          count: "{{count}}"
+          count_tag: "{{instance_name}}"
+          vpc_subnet_id: "{{vpc_subnet_id}}"
+          assign_public_ip: yes
+          wait: yes
+          instance_tags:
+             Name: "{{ instance_name }}"
+             purpose: "EBS scaling test"
+             environment: "demo"
+             orgtype: "{{instance_orgtype}}"
+        register: ec2
+        tags: ec2launch
+
+      - name: Run instance run.
+        local_action: ec2
+                      instance_ids="{{item.id}}"
+                      region="{{ item.region }}"
+                      state=running
+        with_items: "{{ ec2.instances }}"
+
+     # TODO: Use add_hosts once upgraded to Ansible 2.4
+      - name: Add the newly created EC2 instance(s) to the local host group (located inside the directory)
+        local_action: lineinfile
+                      dest="./hosts"
+                      regexp="{{instance_name}} ansible_ssh_user=ubuntu hostname_name={{instance_name}} hostname_fqdn={{item.public_dns_name}} host_eip={{ item.public_ip }} instance_id={{item.id}}"
+                      insertafter="\[{{instance_class}}\]"
+                      line="{{instance_name}} ansible_ssh_user=ubuntu hostname_name={{instance_name}} hostname_fqdn={{item.public_dns_name}} host_eip={{ item.public_ip }} instance_id={{item.id}}"
+        with_items: "{{ ec2.instances }}"
+
+      - name: Add the newly created EC2 instance(s) to the local ssh hosts
+        delegate_to: localhost
+        blockinfile:
+          path: "~/.ssh/config"
+          block: |
+                  Host {{instance_name}}
+                  Hostname "{{item.public_dns_name}}"
+                  User ubuntu
+                  IdentityFile "~/.ssh/{{keypair}}.pem"
+          marker: "# {mark} ANSIBLE MANAGED BLOCK {{ item.tags['Name'] }}"
+        with_items: "{{ ec2.instances }}"
+        when: ec2|changed
+
+
+      - name: Wait for SSH to come up
+        local_action: wait_for
+                      host={{ item.public_ip }}
+                      port=22
+                      state=started
+        with_items: "{{ ec2.instances }}"
+        when: ec2|changed
+
+      - name: Add tag to Instance(s)
+        local_action: ec2_tag resource={{ item.id }} region={{ region }} state=present
+        with_items: "{{ ec2.instances }}"
+        args:
+          tags:
+            Name: "{{instance_name}}"
+            Purpose: "EBS-TEST"
+            environment: demo
+            orgtype: "{{instance_orgtype}}"
+
+            # -  name: Create and attach base EBS volume
+        # ec2_vol:
+        #   instance: "{{item.id}}"
+        #   name: "{{instance_name}}_data"
+        #   device_name: "/dev/xvdf"
+        #   volume_type: gp2
+        #   volume_size: 100
+        #   region: "{{ region }}"
+        #   tags:
+        #     Name: "{{instance_name}}_data"
+        #     Purpose: "EBS-TEST"
+        #     environment: demo
+        #     orgtype: "{{instance_orgtype}}"
+        # with_items: "{{ec2.instances}}"
+        # register: ec2_vol_facts
+
+        #  -  name: spill the beans
+        # debug: var=ec2_vol_facts.results
+
+
+  - name: Provision an EC2 Instance
+    # TODO: prohibits the use of a loop. rethink this.
+    hosts: tmp-ebs-test2
+    become: yes
+    tags: provision
+    gather_facts: False
+    vars_files:
+      - "group_vars/vault.yml"
+    vars:
+      instance_type: t2.medium
+      instance_name: tmp-ebs-test2
+      instance_id: "{{hostvars[inventory_hostname]['instance_id']}}"
+      instance_class: demo-servers
+      instance_orgtype: apt
+      security_group: ebs_scale_test # Change the security group name here
+      image: ami-cd0f5cb6
+      region: us-east-1
+      keypair: staging-test
+      count: 1
+
+      # LVM settings
+      lvm_filesystem: ext4
+
+      # AWS.cli
+      aws_access_key_id: "{{aws_access_key_ubuntu}}"
+      aws_secret_access_key: "{{aws_secret_access_key_ubuntu}}"
+
+    environment:
+      aws_access_key: "{{aws_access_key}}"
+      aws_secret_key: "{{aws_secret_key}}"
+
+    pre_tasks:
+     - name: Install python for Ansible
+       raw: test -e /usr/bin/python || (apt -y update && apt install -y python-minimal)
+       register: output
+       changed_when: output.stdout != ""
+     - setup: # aka gather_facts
+
+    roles:
+        - { role: common, tags: common}
+        - { role: aws.cli, tags: aws.cli}
+        - { role: aws.ebs_scale, tags: ebs_scale}
+
+    tasks:
+      - name: Gather AWS Facts
+        ec2_remote_facts:
+          filters:
+            "tag:Name": "{{instance_name}}"
+          region: "{{region}}"
+          aws_access_key: "{{ lookup('env', 'AWS_ACCESS_KEY_ID') }}"
+          aws_secret_key: "{{ lookup('env', 'AWS_SECRET_ACCESS_KEY') }}"
+        register: ec2vol

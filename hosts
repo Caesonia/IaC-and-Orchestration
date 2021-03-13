@@ -23,7 +23,9 @@
 #192.168.1.100
 #192.168.1.110
 172.31.42.49
-localhost ansible_connection=local ansible_python_interpreter=python3
+
+[local]
+localhost ansible_connection=local ansible_python_interpreter=/usr/local/bin/python3
 # If you have multiple hosts following a pattern you can specify
 # them like this:
 
@@ -42,3 +44,5 @@ localhost ansible_connection=local ansible_python_interpreter=python3
 # leading 0s:
 
 ## db-[99:101]-node.example.com
+
+[demo_servers]

@@ -1,0 +1,44 @@
+- hosts: local
+  gather_facts: no
+  vars_files:
+    - aws_vars/aws_keys.yml
+  tasks:
+    - name: Provision instance
+      ec2:
+        region: us-east-1
+        instance_type: t2.micro
+        keypair: aptrust-flav
+        image: ami-02fe94dee086c0c37
+        assign_public_ip: yes
+        vpc_subnet_id: subnet-07fffa41
+        group: APTrustOps
+        wait: true
+        exact_count: 0
+        count_tag:
+          Name: DemoPreserv
+        instance_tags:
+          Name: DemoPreserv
+      register: ec2
+    - debug:
+        var: ec2
+   
+    - name: add host to inventory
+      add_host:
+        hostname: '{{ item.public_ip }}'
+        groupname: demo_servers
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+        ansible_ssh_private_key_file: ~/.ssh/aptrust
+      loop: '{{ ec2.instances }}'
+    
+- hosts: demo_servers
+  gather_facts: no
+  remote_user: ubuntu
+  tasks:
+    - name: wait for SSH
+      wait_for_connection:
+        delay: 5
+        timeout: 90
+    - name: Check host status
+      ping: 
+
+   

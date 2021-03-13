@@ -1,0 +1,24 @@
+---
+  - name: Test ecs
+    hosts: local
+    connection: local
+
+    tasks:
+      - name: Cluster creation
+        community.aws.ecs_cluster:
+          name: apt-test-cluster-1
+          state: present
+
+      - name: Create a test cluster with a new service on a VPC
+        community.aws.ecs_service:
+          state: present
+          name: apt-test-service-1
+          cluster: apt-test-cluster-1
+          task_definition: 'weather-app:1'
+          desired_count: 1
+          network_configuration:
+            subnets:
+            - subnet-0ff6f4977e9659a80
+            security_groups:
+            - sg-0d6a344e309f4bdde
+
